@@ -1,22 +1,21 @@
 import numpy as np
 import math
 
-MAX_RANGE = 20.0  # maximum observation range
-M_DIST_TH = 2.0  # Threshold of Mahalanobis distance for data association.
+MAX_RANGE = 2.0  # maximum observation range
 STATE_SIZE = 3  # State size [x,y,yaw]
 LM_SIZE = 2  # LM state size [x,y]
 
 class EKFSLAM:
-    def __init__(self, Rt, Qt):
+    def __init__(self, Rt, Qt, landmarks):
         # State Vector [x y yaw v]'
         self.xEst = np.zeros((STATE_SIZE, 1))
         self.PEst = np.eye(STATE_SIZE)
         self.initP = np.eye(STATE_SIZE)
-        self.lm = np.empty((0, LM_SIZE))  # Landmarks
         self.lm_id = np.empty((0, 1))  # Landmark ID list
-        self.time = 0.0  # Simulation time
         self.Rt = Rt # Noise of robot model
         self.Qt = Qt # Noise of observation model
+        self.landmarks = landmarks # Landmarks in world frame
+        self.u = np.zeros((2, 1)) # Control input
 
     def predict(self, u, dt):
         """
@@ -26,45 +25,51 @@ class EKFSLAM:
         :returns:    predicted state vector, predicted covariance, jacobian of control vector, transition fx
         """
         S = STATE_SIZE
+        self.u = u
         G, Fx = self.jacob_motion(self.xEst[0:S], u, dt)
         self.xEst[0:S] = self.motion_model(self.xEst[0:S], u, dt)
         # Fx is an an identity matrix of size (STATE_SIZE)
         # sigma = G*sigma*G.T + Noise
         self.PEst[0:S, 0:S] = G.T @ self.PEst[0:S, 0:S] @ G + Fx.T @ self.Rt @ Fx
-        print("Predicted state: ", self.xEst)
+        # print("Predicted state: ", self.xEst)
         # print("Predicted covariance: ", self.PEst)
         return self.PEst, G, Fx
 
-    def update(self, u, z):
+    def update(self, measurement):
         """
         Performs the update step of EKF SLAM
 
-        :param u:     2x1 the control function
         :param z:     the measurements read at new position
         :returns:     the updated state and covariance for the system
         """
-        for iz in range(len(z[:, 0])):  # for each observation
-            minid = self.search_correspond_LM_ID(z[iz, 0:2]) # associate to a known landmark
+        for lm in self.landmarks:  # for each observation
 
-            nLM = self.calc_n_LM() # number of landmarks we currently know about
+            z   = measurement[1:]
+            id  = measurement[0]
+            nLM = self.calc_n_LM(self.xEst)
 
-            if minid == nLM: # Landmark is a NEW landmark
+            print("id: ", measurement[0])
+            print("num lm: ", nLM)
+            if id == nLM + 1: # Landmark is a NEW landmark
                 print("New LM")
+                print("x: ", self.xEst)
+                print("z: ", z)
+                print("z relative: ", self.calc_LM_Pos(self.xEst, z))
                 # Extend state and covariance matrix
-                xAug = np.vstack((self.xEst, self.calc_LM_Pos(z[iz, :])))
-                PAug = np.vstack((np.hstack((self.PEst, np.zeros((len(self.xEst), LM_SIZE)))),
-                                np.hstack((np.zeros((LM_SIZE, len(self.xEst))), self.initP))))
-                self.xEst = xAug
-                self.PEst = PAug
+                # xAug = np.vstack((self.xEst, self.calc_LM_Pos(self.xEst, z[-2, :])))
+                # PAug = np.vstack((np.hstack((self.PEst, np.zeros((len(self.xEst), LM_SIZE)))),
+                #                 np.hstack((np.zeros((LM_SIZE, len(self.xEst))), self.initP))))
+                # self.xEst = xAug
+                # self.PEst = PAug
 
-            lm = self.get_LM_Pos_from_state(minid)
-            y, S, H = self.calc_innovation(lm, z[iz, 0:2], minid)
+        #     lm = self.get_LM_Pos_from_state(minid)
+        #     y, S, H = self.calc_innovation(lm, z[iz, 0:2], minid)
 
-            K = (self.PEst @ H.T) @ np.linalg.inv(S) # Calculate Kalman Gain
-            self.xEst = self.xEst + (K @ y)
-            self.PEst = (np.eye(len(self.xEst)) - (K @ H)) @ self.PEst
+        #     K = (self.PEst @ H.T) @ np.linalg.inv(S) # Calculate Kalman Gain
+        #     self.xEst = self.xEst + (K @ y)
+        #     self.PEst = (np.eye(len(self.xEst)) - (K @ H)) @ self.PEst
 
-        self.xEst[2] = self.pi_2_pi(self.xEst[2])
+        # self.xEst[2] = self.pi_2_pi(self.xEst[2])
         return self.PEst
     
     def motion_model(self, x, u, dt):
