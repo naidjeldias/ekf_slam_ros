@@ -39,6 +39,9 @@ class EKFSLAMNode(Node):
         self.last_update = None
 
         self.ekf = EKFSLAM(Rt, Qt, self.landmarks)
+
+        #create an odometry publisher
+        self.odom_pub = self.create_publisher(Odometry, '/odom_slam', 1)
         
         self.tag_detect_sub = self.create_subscription(
             AprilTagDetectionArray,
@@ -59,7 +62,7 @@ class EKFSLAMNode(Node):
             1)
         
         # filter frequency
-        frequency = 1.0
+        frequency = 30.0
         self.timer = self.create_timer(1./frequency, self.filter_loop)
     
     def camera_info_callback(self, msg):
@@ -72,17 +75,17 @@ class EKFSLAMNode(Node):
         self.v = msg.twist.twist.linear.x
         self.w = msg.twist.twist.angular.z
         
-        # Implement motion model to predict state change
-        # Update self.state_estimate and self.covariance
-        
     def tag_detection_callback(self, msg):
         for tag in msg.detections:
             H = np.array(tag.homography).reshape((3, 3))
             H = np.vstack((H, np.array([0, 0, 1])))
             measure = self.get_range_bearing(self.Pinv, H)
-            # lm = [id, x, y]
-            # lm = np.array([tag.id, measure[0], measure[1]])
-            # self.ekf.update(lm)
+            
+            if measure is not None:
+                # print tag id, range and bearing in degrees
+                self.get_logger().info(f'Tag {tag.id} detected at range {measure[0]} and bearing {np.rad2deg(measure[1])}')
+                lm = np.array([tag.id, measure[0], measure[1]])
+                self.ekf.update(lm)
             
     def get_range_bearing(self, Pinv, H):
         #compute extrinsic camera parameter
@@ -113,34 +116,28 @@ class EKFSLAMNode(Node):
             tag_pose.orientation.z = r.as_quat()[2]
             tag_pose.orientation.w = r.as_quat()[3]
 
-            # print("Tag position: ", tag_pose.position.x, tag_pose.position.y, tag_pose.position.z)
-            # print("Tag orientation: ", tag_pose.orientation.x, tag_pose.orientation.y, tag_pose.orientation.z, tag_pose.orientation.w)
+            pose_transformed = tf2_geometry_msgs.do_transform_pose(tag_pose, self.camera_to_base)            
+            bearing = np.arctan2(pose_transformed.position.y, pose_transformed.position.x)
+            range = np.linalg.norm([pose_transformed.position.x, pose_transformed.position.y])
 
-            pose_transformed = tf2_geometry_msgs.do_transform_pose(tag_pose, self.camera_to_base)
-            print("Position: ", pose_transformed.position.x, pose_transformed.position.y, pose_transformed.position.z)
-            print("Orientation: ", pose_transformed.orientation.x, pose_transformed.orientation.y, pose_transformed.orientation.z, pose_transformed.orientation.w)
-            
-            r = Rot.from_quat([pose_transformed.orientation.x, pose_transformed.orientation.y, pose_transformed.orientation.z, pose_transformed.orientation.w])
-            print("Rotation: ", r.as_euler('xyz', degrees=True))
-            # z_rotation = np.array([
-            #     [-1, 0, 0],
-            #     [0, -1, 0],
-            #     [0, 0, 1]
-            # ])
-            # x_rotation = np.array([
-            #     [1, 0, 0],
-            #     [0, -1, 0],
-            #     [0, 0, -1]
-            # ])
-            
-            # # Apply rotations
-            # R = np.dot(R, z_rotation)
-            # R = np.dot(R, x_rotation)
+            return np.array([range, bearing])
+    
+    # Function that receive the current state and covariance and publish a odometry message
+    def publish_odometry(self, state, covariance):
+        odom = Odometry()
+        odom.header.frame_id = 'odom'
+        odom.child_frame_id = 'base_link'
+        odom.header.stamp = self.get_clock().now().to_msg()
+        odom.pose.pose.position.x = state[0, 0]
+        odom.pose.pose.position.y = state[1, 0]
+        odom.pose.pose.position.z = 0.0
+        r = Rot.from_euler('z', state[2, 0])
+        odom.pose.pose.orientation.x = r.as_quat()[0]
+        odom.pose.pose.orientation.y = r.as_quat()[1]
+        odom.pose.pose.orientation.z = r.as_quat()[2]
+        odom.pose.pose.orientation.w = r.as_quat()[3]
+        self.odom_pub.publish(odom)
 
-            # print("R: ", R)
-
-            return np.array([t[2], -t[0]])
-        
     def filter_loop(self):
         try:
             
@@ -154,7 +151,8 @@ class EKFSLAMNode(Node):
         current_time = self.get_clock().now()
         if self.last_update is not None:
             dt = (current_time - self.last_update).nanoseconds / 1e9
-            self.ekf.predict(np.array([self.v, self.w]).reshape((2, 1)), dt)
+            X, P = self.ekf.predict(np.array([self.v, self.w]).reshape((2, 1)), dt)
+            self.publish_odometry(X, P)
         self.last_update = current_time
 
 def main(args=None):

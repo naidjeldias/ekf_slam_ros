@@ -1,16 +1,16 @@
 import numpy as np
 import math
 
-MAX_RANGE = 2.0  # maximum observation range
+MAX_RANGE = 0.8  # maximum observation range
 STATE_SIZE = 3  # State size [x,y,yaw]
 LM_SIZE = 2  # LM state size [x,y]
 
 class EKFSLAM:
     def __init__(self, Rt, Qt, landmarks):
-        # State Vector [x y yaw v]'
+        # State Vector [x y yaw]'
         self.xEst = np.zeros((STATE_SIZE, 1))
         self.PEst = np.eye(STATE_SIZE)
-        self.initP = np.eye(STATE_SIZE)
+        self.initP = np.eye(2)
         self.lm_id = np.empty((0, 1))  # Landmark ID list
         self.Rt = Rt # Noise of robot model
         self.Qt = Qt # Noise of observation model
@@ -31,9 +31,8 @@ class EKFSLAM:
         # Fx is an an identity matrix of size (STATE_SIZE)
         # sigma = G*sigma*G.T + Noise
         self.PEst[0:S, 0:S] = G.T @ self.PEst[0:S, 0:S] @ G + Fx.T @ self.Rt @ Fx
-        # print("Predicted state: ", self.xEst)
-        # print("Predicted covariance: ", self.PEst)
-        return self.PEst, G, Fx
+
+        return self.xEst, self.PEst
 
     def update(self, measurement):
         """
@@ -41,35 +40,34 @@ class EKFSLAM:
 
         :param z:     the measurements read at new position
         :returns:     the updated state and covariance for the system
-        """
-        for lm in self.landmarks:  # for each observation
+        """        
+        
+        z   = measurement[1:]
+        id  = int(measurement[0] - 1) # ID start from 1
+        nLM = self.calc_n_LM(self.xEst)
 
-            z   = measurement[1:]
-            id  = measurement[0]
-            nLM = self.calc_n_LM(self.xEst)
+        if z[0] > MAX_RANGE:
+            return self.PEst
 
-            print("id: ", measurement[0])
-            print("num lm: ", nLM)
-            if id == nLM + 1: # Landmark is a NEW landmark
-                print("New LM")
-                print("x: ", self.xEst)
-                print("z: ", z)
-                print("z relative: ", self.calc_LM_Pos(self.xEst, z))
-                # Extend state and covariance matrix
-                # xAug = np.vstack((self.xEst, self.calc_LM_Pos(self.xEst, z[-2, :])))
-                # PAug = np.vstack((np.hstack((self.PEst, np.zeros((len(self.xEst), LM_SIZE)))),
-                #                 np.hstack((np.zeros((LM_SIZE, len(self.xEst))), self.initP))))
-                # self.xEst = xAug
-                # self.PEst = PAug
+        print("Num lm: ", nLM)
+        if id == nLM: # Landmark is a NEW landmark
+            print("New LM detected with ID: ", id)
+            # Extend state and covariance matrix
+            xAug = np.vstack((self.xEst, self.calc_LM_Pos(self.xEst, z)))
+            PAug = np.vstack((np.hstack((self.PEst, np.zeros((len(self.xEst), LM_SIZE)))),
+                            np.hstack((np.zeros((LM_SIZE, len(self.xEst))), self.initP))))
+            self.xEst = xAug
+            self.PEst = PAug
 
-        #     lm = self.get_LM_Pos_from_state(minid)
-        #     y, S, H = self.calc_innovation(lm, z[iz, 0:2], minid)
+        lm = self.get_LM_Pos_from_state(self.xEst, id)
+        y, S, H = self.calc_innovation(lm, z, id)
 
-        #     K = (self.PEst @ H.T) @ np.linalg.inv(S) # Calculate Kalman Gain
-        #     self.xEst = self.xEst + (K @ y)
-        #     self.PEst = (np.eye(len(self.xEst)) - (K @ H)) @ self.PEst
+        K = (self.PEst @ H.T) @ np.linalg.inv(S) # Calculate Kalman Gain
+        self.xEst = self.xEst + (K @ y)
+        self.PEst = (np.eye(len(self.xEst)) - (K @ H)) @ self.PEst
 
-        # self.xEst[2] = self.pi_2_pi(self.xEst[2])
+        self.xEst[2] = self.pi_2_pi(self.xEst[2])
+        print("Updated state: ", self.xEst)
         return self.PEst
     
     def motion_model(self, x, u, dt):
@@ -123,7 +121,7 @@ class EKFSLAM:
             print(Fx.shape)
         return G, Fx,
     
-    def pi_2_pi(angle):
+    def pi_2_pi(self, angle):
         return (angle + math.pi) % (2 * math.pi) - math.pi
 
     def jacobH(self, q, delta, x, i):
@@ -162,15 +160,14 @@ class EKFSLAM:
         :returns:    returns the innovation y, and the jacobian H, and S, used to calculate the Kalman Gain
         """
         delta = lm - self.xEst[0:2] # difference between landmark position and estimated position
-        q = (delta.T @ delta)[0, 0] 
+        q = (delta.T @ delta)[0, 0]
         zangle = math.atan2(delta[1, 0], delta[0, 0]) - self.xEst[2, 0] # angle between landmark and estimated position
         zp = np.array([[math.sqrt(q), self.pi_2_pi(zangle)]])
         # zp is the expected measurement based on xEst and the expected landmark position
-
         y = (z - zp).T # y = innovation
         y[1] = self.pi_2_pi(y[1])
 
-        H = self.jacobH(q, delta, LMid + 1)
+        H = self.jacobH(q, delta, self.xEst, LMid + 1)
         S = H @ self.PEst @ H.T + self.Qt[0:2, 0:2]
 
         return y, S, H
@@ -186,34 +183,6 @@ class EKFSLAM:
         lm = x[STATE_SIZE + LM_SIZE * ind: STATE_SIZE + LM_SIZE * (ind + 1), :] # Get the landmark position from the state
 
         return lm
-
-    def search_correspond_LM_ID(self, xAug, PAug, zi):
-        """
-        Landmark association with Mahalanobis distance.
-
-        If this landmark is at least M_DIST_TH units away from all known landmarks,
-        it is a NEW landmark.
-
-        :param xAug: The estimated state
-        :param PAug: The estimated covariance
-        :param zi:   the read measurements of specific landmark
-        :returns:    landmark id
-        """
-
-        nLM = self.calc_n_LM(xAug)
-
-        mdist = []
-
-        for i in range(nLM):
-            lm = self.get_LM_Pos_from_state(xAug, i)
-            y, S, H = self.calc_innovation(lm, xAug, PAug, zi, i)
-            mdist.append(y.T @ np.linalg.inv(S) @ y) # mahalanobis distance
-
-        mdist.append(M_DIST_TH)  # new landmark
-
-        minid = mdist.index(min(mdist)) # get the index of the minimum mahalanobis distance
-
-        return minid
 
     def calc_LM_Pos(self, x, z):
         """
