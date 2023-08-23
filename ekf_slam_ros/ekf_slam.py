@@ -1,12 +1,12 @@
 import numpy as np
 import math
 
-MAX_RANGE = 0.8  # maximum observation range
+MAX_RANGE = 1.5  # maximum observation range
 STATE_SIZE = 3  # State size [x,y,yaw]
 LM_SIZE = 2  # LM state size [x,y]
 
 class EKFSLAM:
-    def __init__(self, Rt, Qt, landmarks):
+    def __init__(self, Rt, Qt):
         # State Vector [x y yaw]'
         self.xEst = np.zeros((STATE_SIZE, 1))
         self.PEst = np.eye(STATE_SIZE)
@@ -14,7 +14,6 @@ class EKFSLAM:
         self.lm_id = np.empty((0, 1))  # Landmark ID list
         self.Rt = Rt # Noise of robot model
         self.Qt = Qt # Noise of observation model
-        self.landmarks = landmarks # Landmarks in world frame
         self.u = np.zeros((2, 1)) # Control input
 
     def predict(self, u, dt):
@@ -67,7 +66,6 @@ class EKFSLAM:
         self.PEst = (np.eye(len(self.xEst)) - (K @ H)) @ self.PEst
 
         self.xEst[2] = self.pi_2_pi(self.xEst[2])
-        print("Updated state: ", self.xEst)
         return self.PEst
     
     def motion_model(self, x, u, dt):

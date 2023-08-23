@@ -21,24 +21,20 @@ class EKFSLAMNode(Node):
         self.base_frame = 'base_link'
         self.camera_to_base = None
         
-        Rt = np.diag([0.2, 0.2, np.deg2rad(20.0)]) ** 2
-        Qt = np.diag([0.2, 0.2]) ** 2
+        # filter frequency
+        frequency = 99.0
+        Rt = np.diag([0.1, 0.1, np.deg2rad(10.0)]) ** 2
+        Qt = np.diag([5., np.deg2rad(30.0)]) ** 2
 
-        self.tag_size = 0.106
-        self.v = 0.0
+        self.tag_size = 0.2
+        self.vx = 0.0
+        self.vy = 0.0
         self.w = 0.0
         self.Pinv = None
-        # List of landmarks in the world frame
-        self.landmarks = {
-            1: np.array([2.77, 0.55]),
-            2: np.array([2.77, -3]),
-            3: np.array([2.77, -6.75]),
-            4: np.array([1.8, -10.31])
-        }
         
         self.last_update = None
 
-        self.ekf = EKFSLAM(Rt, Qt, self.landmarks)
+        self.ekf = EKFSLAM(Rt, Qt)
 
         #create an odometry publisher
         self.odom_pub = self.create_publisher(Odometry, '/odom_slam', 1)
@@ -61,8 +57,6 @@ class EKFSLAMNode(Node):
             self.control_callback,
             1)
         
-        # filter frequency
-        frequency = 30.0
         self.timer = self.create_timer(1./frequency, self.filter_loop)
     
     def camera_info_callback(self, msg):
@@ -72,7 +66,8 @@ class EKFSLAMNode(Node):
 
     def control_callback(self, msg):
         # Extract linear and angular velocities from Twist message
-        self.v = msg.twist.twist.linear.x
+        self.vx = msg.twist.twist.linear.x
+        self.vy = msg.twist.twist.linear.y
         self.w = msg.twist.twist.angular.z
         
     def tag_detection_callback(self, msg):
@@ -86,6 +81,7 @@ class EKFSLAMNode(Node):
                 self.get_logger().info(f'Tag {tag.id} detected at range {measure[0]} and bearing {np.rad2deg(measure[1])}')
                 lm = np.array([tag.id, measure[0], measure[1]])
                 self.ekf.update(lm)
+                self.get_logger().info(f'Current state: {self.ekf.xEst}')
             
     def get_range_bearing(self, Pinv, H):
         #compute extrinsic camera parameter
@@ -151,7 +147,7 @@ class EKFSLAMNode(Node):
         current_time = self.get_clock().now()
         if self.last_update is not None:
             dt = (current_time - self.last_update).nanoseconds / 1e9
-            X, P = self.ekf.predict(np.array([self.v, self.w]).reshape((2, 1)), dt)
+            X, P = self.ekf.predict(np.array([self.vx, self.w]).reshape((2, 1)), dt)
             self.publish_odometry(X, P)
         self.last_update = current_time
 
